@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#FBF6EE" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#131D1C" media="(prefers-color-scheme: dark)" />
+    <title>Ons reisdagboek</title>
+    <style>
+      :root { --paper:#fbf6ee; --ink:#2c2a2b; --soft:#6b6573; --coral:#c4472e; --card:#fff; color-scheme: light dark; }
+      @media (prefers-color-scheme: dark) { :root { --paper:#131d1c; --ink:#f6efe4; --soft:#a9b9b2; --coral:#f0836a; --card:#223332; } }
+      * { box-sizing: border-box; }
+      body { margin:0; min-height:100vh; display:grid; place-items:center; padding:1.5rem; background:var(--paper); color:var(--ink); font:17px/1.5 system-ui, sans-serif; }
+      main { width:min(22rem,100%); text-align:center; }
+      h1 { font:700 2.2rem/1.15 Georgia, 'Times New Roman', serif; margin:0 0 .3rem; }
+      p { margin:.2rem 0 1.4rem; color:var(--soft); }
+      .heart { font-size:2.4rem; color:var(--coral); }
+      form { background:var(--card); padding:1.2rem; border-radius:14px; box-shadow:0 8px 24px rgba(0,0,0,.14); }
+      input { width:100%; font:inherit; padding:.7rem .8rem; border-radius:10px; border:2px solid #c9c2b8; background:transparent; color:inherit; }
+      input:focus { outline:none; border-color:var(--coral); }
+      button { margin-top:.8rem; width:100%; font:inherit; font-weight:600; padding:.7rem; border:0; border-radius:10px; background:var(--coral); color:#fff; cursor:pointer; }
+      @media (prefers-color-scheme: dark) { button { color:#131d1c; } }
+      button:disabled { opacity:.6; cursor:wait; }
+      #msg { min-height:1.5rem; margin:.7rem 0 0; font-size:.95rem; color:var(--coral); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="heart" aria-hidden="true">♥</div>
+      <h1>Ons reisdagboek</h1>
+      <p>Dit is een privéplek. Vul het wachtwoord in om te openen.</p>
+      <form id="f">
+        <label class="sr" for="pw" style="position:absolute;left:-9999px">Wachtwoord</label>
+        <input id="pw" type="password" autocomplete="current-password" placeholder="Wachtwoord" required autofocus />
+        <button id="go" type="submit">Openen</button>
+        <p id="msg" role="status"></p>
+      </form>
+    </main>
+    <script>
+      // Het wachtwoord verlaat dit apparaat nooit: de sleutel wordt in de browser afgeleid en
+      // de foto's en pagina's worden in de browser ontsleuteld (zie sw.js).
+      const $ = (id) => document.getElementById(id);
+      const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+      function idbPut(value) {
+        return new Promise((resolve, reject) => {
+          const open = indexedDB.open('reisdagboek', 1);
+          open.onupgradeneeded = () => open.result.createObjectStore('s');
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const tx = open.result.transaction('s', 'readwrite');
+            tx.objectStore('s').put(value, 'state');
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+          };
+        });
+      }
+
+      async function unlock(password) {
+        const meta = await (await fetch('meta.json', { cache: 'no-cache' })).json();
+        const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password.normalize('NFKC')), 'PBKDF2', false, ['deriveKey']);
+        const key = await crypto.subtle.deriveKey(
+          { name: 'PBKDF2', salt: b64(meta.salt), iterations: meta.iter, hash: 'SHA-256' },
+          base, { name: 'AES-GCM', length: 256 }, false, ['decrypt'],
+        );
+        const blob = new Uint8Array(await (await fetch('m.bin', { cache: 'no-cache' })).arrayBuffer());
+        let manifest;
+        try {
+          const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: blob.slice(0, 12) }, key, blob.slice(12));
+          manifest = JSON.parse(new TextDecoder().decode(plain));
+        } catch {
+          return false; // verkeerd wachtwoord
+        }
+        await idbPut({ key, files: manifest.files });
+        const reg = await navigator.serviceWorker.register('sw.js', { scope: './' });
+        await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) await new Promise((r) => setTimeout(r, 300));
+        return true;
+      }
+
+      $('f').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const msg = $('msg'), btn = $('go');
+        if (!('serviceWorker' in navigator) || !crypto.subtle) {
+          msg.textContent = 'Deze browser wordt niet ondersteund. Probeer Chrome, Safari of Firefox.';
+          return;
+        }
+        btn.disabled = true;
+        msg.style.color = '';
+        msg.textContent = 'Even geduld…';
+        try {
+          const ok = await unlock($('pw').value);
+          if (ok) { msg.textContent = 'Welkom! ♥'; location.reload(); }
+          else { msg.textContent = 'Dat wachtwoord klopt niet.'; btn.disabled = false; }
+        } catch (err) {
+          msg.textContent = 'Er ging iets mis. Probeer het opnieuw.';
+          btn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
